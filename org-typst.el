@@ -4,27 +4,25 @@
 ;; Maintainer: Martin Bari Garnier <martbari.g@gmail.com>
 ;; Version: 0.1
 ;; Package-Requires: ((emacs "27.1"))
-;; Keywords: tools, 3D, blender
+;; Keywords: tools, typing, org
 ;; URL: https://github.com/MartinBaGar/blender.el
 
 ;;; Commentary:
-
-;; blender.el provides integration between Emacs and Blender. It allows
-;; you to send Python code from Emacs directly to Blender for execution,
-;; control the Blender Python environment, and automate workflows.
-;; Note: This is designed to work with Emacs running in WSL and Blender running on Windows.
-;; Ensure Blender paths are converted using `wslpath -w` for compatibility.
+;;; Robust, async, and context-aware Typst previews for Org mode.
+;;; It automatically detects inline math fragments ($...$), compiles them
+;;; to SVG using the Typst CLI, and overlays them in the buffer.
 
 ;;; Code:
-(defgroup org-typst nil
-  "Typst integration for Org mode."
-  :group 'tools
-  :prefix "org-typst-")
 
 (require 'org)
 (require 'sha1)
 (require 'svg)
-(require 'cl-lib)
+(require 'seq)
+
+(defgroup org-typst nil
+  "Typst integration for Org mode."
+  :group 'tools
+  :prefix "org-typst-")
 
 ;; =============================================================================
 ;; 1. CONFIGURATION
@@ -36,18 +34,17 @@
 
 (defcustom org-typst-preamble
   "#set page(width: auto, height: auto, margin: 2pt)
-#set text(font: \"New Computer Modern\", size: 12pt)
-"
+  #set text(font: \"New Computer Modern\", size: 12pt)"
   "Preamble prepended to every fragment."
   :type 'string :group 'org-typst)
 
-(defcustom org-typst-scale 1.5 "Scaling factor for buffer images." :type 'float)
-(defcustom org-typst-echo-scale 2.0 "Scaling factor for echo area." :type 'float)
-(defcustom org-typst-idle-delay 0.5 "Seconds of idleness before preview." :type 'float)
+(defcustom org-typst-scale 1.5 "Scaling factor for buffer images." :type 'float :group 'org-typst)
+(defcustom org-typst-echo-scale 2.0 "Scaling factor for echo area." :type 'float :group 'org-typst)
+(defcustom org-typst-idle-delay 0.5 "Seconds of idleness before preview." :type 'float :group 'org-typst)
 
 (defcustom org-typst-enable-echo-preview t
   "If non-nil, show a preview in the echo area when editing a fragment."
-  :type 'boolean)
+  :type 'boolean :group 'org-typst)
 
 (defvar org-typst-cache-dir (expand-file-name "org-typst-cache/" user-emacs-directory))
 
@@ -88,7 +85,7 @@ CALLBACK is called with the path to the generated image when done."
         (funcall callback image-path)
       
       (let* ((temp-file (make-temp-file "org-typst-" nil ".typ"))
-             ;; FIX: Use a hidden buffer for stderr instead of a file
+             ;; Use a hidden buffer for stderr instead of a file
              (err-buf (generate-new-buffer " *org-typst-stderr*"))
              (full-source (concat org-typst-preamble "\n" context "\n" code))
              (proc (make-process
@@ -173,6 +170,7 @@ Overlay is removed when the text is modified and has property ORG-TYPST-OVERLAY.
 (defconst org-typst-regex "\\(\\$\\([^$]+\\)\\$\\)")
 
 (defun org-typst-scan ()
+  "Find fragments in the visible window and decide to Overlay or Echo."
   (interactive)
   (when (eq major-mode 'org-mode)
     (let ((beg (window-start)) (end (window-end)) (pt (point)))
@@ -190,11 +188,13 @@ Overlay is removed when the text is modified and has property ORG-TYPST-OVERLAY.
               (let ((context (org-typst--collect-context)))
                 (if cursor-inside
                     (when org-typst-enable-echo-preview
-                      (lexical-let ((p-code code) (p-ctx context))
+                      ;; Standard let works as lexical-let because of file header
+                      (let ((p-code code) (p-ctx context))
                         (org-typst--compile p-code p-ctx #'org-typst--echo-preview)))
 
                   (unless (seq-some (lambda (ov) (overlay-get ov 'org-typst-overlay)) (overlays-at m-beg))
-                    (lexical-let ((c-beg m-beg) (c-end m-end) (c-buf (current-buffer)) (c-ctx context))
+                    ;; Explicitly capture current buffer for the async callback
+                    (let ((c-beg m-beg) (c-end m-end) (c-buf (current-buffer)) (c-ctx context))
                       (org-typst--compile code c-ctx
                                           (lambda (path)
                                             (when (buffer-live-p c-buf)
