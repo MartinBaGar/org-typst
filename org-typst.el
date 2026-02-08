@@ -1,5 +1,25 @@
-;;; -*- lexical-binding: t; -*-
-;;; org-typst-live.el --- Robust Typst previews for Org mode
+;;; org-typst.el --- Robust Typst previews for Org mode -*- lexical-binding: t; -*-
+
+;; Author: Martin Bari Garnier <martbari.g@gmail.com>
+;; Maintainer: Martin Bari Garnier <martbari.g@gmail.com>
+;; Version: 0.1
+;; Package-Requires: ((emacs "27.1"))
+;; Keywords: tools, 3D, blender
+;; URL: https://github.com/MartinBaGar/blender.el
+
+;;; Commentary:
+
+;; blender.el provides integration between Emacs and Blender. It allows
+;; you to send Python code from Emacs directly to Blender for execution,
+;; control the Blender Python environment, and automate workflows.
+;; Note: This is designed to work with Emacs running in WSL and Blender running on Windows.
+;; Ensure Blender paths are converted using `wslpath -w` for compatibility.
+
+;;; Code:
+(defgroup org-typst nil
+  "Typst integration for Org mode."
+  :group 'tools
+  :prefix "org-typst-")
 
 (require 'org)
 (require 'sha1)
@@ -12,14 +32,14 @@
 
 (defcustom org-typst-compiler-bin "typst"
   "Path to the Typst executable."
-  :type 'string :group 'org-typst-live)
+  :type 'string :group 'org-typst)
 
 (defcustom org-typst-preamble
   "#set page(width: auto, height: auto, margin: 2pt)
 #set text(font: \"New Computer Modern\", size: 12pt)
 "
   "Preamble prepended to every fragment."
-  :type 'string :group 'org-typst-live)
+  :type 'string :group 'org-typst)
 
 (defcustom org-typst-scale 1.5 "Scaling factor for buffer images." :type 'float)
 (defcustom org-typst-echo-scale 2.0 "Scaling factor for echo area." :type 'float)
@@ -50,15 +70,15 @@
         (goto-char (point-min))
         (while (re-search-forward "^[ \t]*#\\+begin_\\(?:export\\|src\\)[ \t]+typst" nil t)
           (let ((start (line-beginning-position 2))
-                (end (save-excursion 
-                       (re-search-forward "^[ \t]*#\\+end_" nil t)
-                       (match-beginning 0))))
+                (end (save-excursion (re-search-forward "^[ \t]*#\\+end_" nil t)
+                                     (match-beginning 0))))
             (when (and start end (> end start))
               (setq context (concat context (buffer-substring-no-properties start end) "\n")))))
         context))))
 
 (defun org-typst--compile (code context callback)
-  "Compile CODE with CONTEXT asynchronously using in-memory buffers."
+  "Compile CODE with CONTEXT asynchronously using in-memory buffers.
+CALLBACK is called with the path to the generated image when done."
   (let* ((hash (sha1 (concat org-typst-preamble context code)))
          (image-path (expand-file-name (concat hash ".svg") org-typst-cache-dir)))
     
@@ -86,7 +106,8 @@
         (process-put proc 'callback callback)))))
 
 (defun org-typst--sentinel (proc event)
-  "Handle compilation finish. Clean up buffers and notify on error."
+  "Handle compilation for PROC after finished EVENT.
+Clean up buffers and notify on error."
   (let ((image-path (process-get proc 'image-path))
         (temp-file (process-get proc 'temp-file))
         (err-buf (process-get proc 'err-buf))
@@ -121,6 +142,8 @@
 (defvar-local org-typst--active-overlays nil)
 
 (defun org-typst--display-overlay (beg end image-path)
+  "Display an SVG image overlay from IMAGE-PATH between BEG and END.
+Overlay is removed when the text is modified and has property ORG-TYPST-OVERLAY."
   (org-typst--clear-region beg end)
   (let ((ov (make-overlay beg end nil nil nil))
         (img (create-image image-path 'svg nil :scale org-typst-scale)))
@@ -130,12 +153,15 @@
     (overlay-put ov 'modification-hooks '(org-typst--on-modification))))
 
 (defun org-typst--on-modification (ov after &rest _args)
+  "Delete overlay OV when text is modified (AFTER is nil)."
   (unless after (delete-overlay ov)))
 
 (defun org-typst--clear-region (beg end)
+  "Remove all ORG-TYPST-OVERLAY overlays between BEG and END."
   (remove-overlays beg end 'org-typst-overlay t))
 
 (defun org-typst--echo-preview (image-path)
+  "Display IMAGE-PATH as an SVG in the echo area with org-typst-echo-scale."
   (let ((img (create-image image-path 'svg nil :scale org-typst-echo-scale)))
     (message "%s" (propertize " " 'display img))))
 
@@ -169,23 +195,25 @@
 
                   (unless (seq-some (lambda (ov) (overlay-get ov 'org-typst-overlay)) (overlays-at m-beg))
                     (lexical-let ((c-beg m-beg) (c-end m-end) (c-buf (current-buffer)) (c-ctx context))
-                      (org-typst--compile 
-                       code c-ctx
-                       (lambda (path)
-                         (when (buffer-live-p c-buf)
-                           (with-current-buffer c-buf
-                             (org-typst--display-overlay c-beg c-end path))))))))))))))))
+                      (org-typst--compile code c-ctx
+                                          (lambda (path)
+                                            (when (buffer-live-p c-buf)
+                                              (with-current-buffer c-buf
+                                                (org-typst--display-overlay c-beg c-end path))))))))))))))))
 
 (defun org-typst-schedule ()
+  "Schedule a scan of Org Typst buffer after idle delay."
   (when org-typst-timer (cancel-timer org-typst-timer))
   (setq org-typst-timer (run-with-idle-timer org-typst-idle-delay nil #'org-typst-scan)))
 
-(define-minor-mode org-typst-live-mode
+(define-minor-mode org-typst-mode
   "Toggle live Typst previews."
   :lighter " TypstLive"
-  (if org-typst-live-mode
+  (if org-typst-mode
       (progn (add-hook 'post-command-hook #'org-typst-schedule nil t) (org-typst-scan))
     (remove-hook 'post-command-hook #'org-typst-schedule t)
     (org-typst--clear-region (point-min) (point-max))))
 
-(provide 'org-typst-live)
+(provide 'org-typst)
+
+;;; org-typst.el ends here
